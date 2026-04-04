@@ -2,7 +2,7 @@
 
 Keep a Raspberry Pi display alive while a motion / presence sensor detects
 activity. Designed for a Raspberry Pi running **emteriaOS** with a
-touchscreen, but also works on Raspberry Pi OS with HDMI or DSI displays.
+touchscreen, but also works on Raspberry Pi OS with DSI displays.
 
 ## How it works
 
@@ -19,8 +19,7 @@ A PIR motion sensor (e.g. HC-SR501) is connected to a GPIO pin.
 | **gpiod** (default) | libgpiod ≥ 2 Python bindings | — |
 | **sysfs** | Legacy `/sys/class/gpio` | — |
 | **RPi.GPIO** | `RPi.GPIO` library | — |
-| **backlight** | — | `/sys/class/backlight/rpi_backlight` (official RPi touchscreen) |
-| **hdmi** | — | `vcgencmd display_power` |
+| **backlight** | — | `/sys/class/backlight/rpi_backlight` (official RPi DSI touchscreen) |
 | **android** | — | `input keyevent` (emteriaOS / Android) |
 
 Both the GPIO reader and the display controller can be set to **auto**
@@ -65,7 +64,7 @@ gpio_method = auto     # auto | gpiod | sysfs | rpigpio
 gpio_chip = gpiochip0  # gpiod chip device
 
 [display]
-method = auto          # auto | backlight | hdmi | android
+method = auto          # auto | backlight | android
 backlight_path = /sys/class/backlight/rpi_backlight
 
 [timing]

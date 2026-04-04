@@ -163,31 +163,6 @@ class BacklightController(DisplayController):
         logger.debug("Backlight OFF")
 
 
-class HDMIController(DisplayController):
-    """Control an HDMI display using *vcgencmd*."""
-
-    def __init__(self) -> None:
-        if not _command_exists("vcgencmd"):
-            raise FileNotFoundError("vcgencmd not found")
-        logger.info("HDMIController: using vcgencmd")
-
-    def turn_on(self) -> None:
-        subprocess.run(
-            ["vcgencmd", "display_power", "1"],
-            check=True,
-            capture_output=True,
-        )
-        logger.debug("HDMI display ON")
-
-    def turn_off(self) -> None:
-        subprocess.run(
-            ["vcgencmd", "display_power", "0"],
-            check=True,
-            capture_output=True,
-        )
-        logger.debug("HDMI display OFF")
-
-
 class AndroidController(DisplayController):
     """Control the screen on emteriaOS (Android) via *input keyevent*.
 
@@ -242,11 +217,11 @@ def create_display_controller(
     """Instantiate a *DisplayController* based on the chosen *method*.
 
     When *method* is ``"auto"``, each backend is tried in order:
-    backlight → hdmi → android.
+    backlight → android.
     """
     order: list[str]
     if method == "auto":
-        order = ["backlight", "hdmi", "android"]
+        order = ["backlight", "android"]
     else:
         order = [method]
 
@@ -255,8 +230,6 @@ def create_display_controller(
         try:
             if name == "backlight":
                 return BacklightController(backlight_path)
-            if name == "hdmi":
-                return HDMIController()
             if name == "android":
                 return AndroidController()
             raise ValueError(f"Unknown display method: {name!r}")
