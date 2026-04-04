@@ -77,14 +77,16 @@ level = INFO           # DEBUG, INFO, WARNING, ERROR
 
 ## Usage
 
-### Run directly
+### Raspberry Pi OS (Python)
+
+#### Run directly
 
 ```bash
 sudo python3 rpi_presence.py              # uses ./config.ini
 sudo python3 rpi_presence.py /path/to/config.ini
 ```
 
-### Run as a systemd service
+#### Run as a systemd service
 
 ```bash
 sudo cp rpi_presence.service /etc/systemd/system/
@@ -97,6 +99,70 @@ Check logs:
 ```bash
 journalctl -u rpi_presence -f
 ```
+
+### emteriaOS (Shell Script)
+
+`rpi_presence.sh` is a zero-dependency alternative that runs natively on
+emteriaOS's Android shell.  It requires **no Python, no Termux, and no
+package installation** — only root access and the `input`/`dumpsys` commands
+that are already present on emteriaOS.
+
+#### Prerequisites
+
+Verify that your device has the required components over SSH or ADB shell:
+
+```sh
+id                       # should show uid=0(root)
+ls /sys/class/gpio/      # should list gpiochip0 (and gpio17 after export)
+which input              # /system/bin/input
+which dumpsys            # /system/bin/dumpsys
+```
+
+#### Run directly via SSH
+
+```sh
+# Copy the script to the device (run on your workstation)
+scp rpi_presence.sh config.ini root@<device-ip>:/data/local/tmp/
+
+# SSH in and run it
+ssh root@<device-ip>
+cd /data/local/tmp
+sh rpi_presence.sh            # uses ./config.ini
+sh rpi_presence.sh /path/to/config.ini
+```
+
+#### Run via ADB shell
+
+```sh
+adb push rpi_presence.sh config.ini /data/local/tmp/
+adb shell
+cd /data/local/tmp
+sh rpi_presence.sh
+```
+
+#### Run in the background (persist after SSH logout)
+
+```sh
+nohup sh rpi_presence.sh > /data/local/tmp/rpi_presence.log 2>&1 &
+echo "PID: $!"
+```
+
+Stop it later with:
+
+```sh
+kill <PID>
+```
+
+#### Configuration
+
+The shell script reads the same `config.ini` file as the Python script.
+Only three values are used; all others are ignored:
+
+| Key | Section | Default | Notes |
+|---|---|---|---|
+| `gpio_pin` | `[sensor]` | `17` | BCM GPIO pin number |
+| `timeout` | `[timing]` | `60` | Seconds of no motion before display off |
+| `poll_interval` | `[timing]` | `1` | Seconds between sensor reads (fractions are truncated; minimum 1) |
 
 ## License
 
