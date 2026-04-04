@@ -25,6 +25,9 @@ GPIO_PIN=17
 TIMEOUT=60
 POLL_INTERVAL=1
 
+# Maximum 32-bit signed integer — used to effectively disable Android's screen timeout
+ANDROID_TIMEOUT_NEVER=2147483647
+
 # Parse config.ini if it exists (reads [sensor], [timing] sections only)
 if [ -f "$CONFIG_FILE" ]; then
     _in_sensor=0
@@ -120,6 +123,9 @@ screen_off() {
 # ---------------------------------------------------------------------------
 
 cleanup() {
+    TIMEOUT_MS=$((TIMEOUT * 1000))
+    settings put system screen_off_timeout "$TIMEOUT_MS" 2>/dev/null || true
+    log "Restored Android screen timeout to ${TIMEOUT_MS}ms"
     log "Shutting down — cleaning up GPIO${GPIO_PIN}"
     gpio_unexport
     log "RPiPresence stopped"
@@ -136,6 +142,9 @@ log "Starting RPiPresence (pin=${GPIO_PIN}, timeout=${TIMEOUT}s, poll=${POLL_INT
 log "Config: ${CONFIG_FILE}"
 
 gpio_export
+
+settings put system screen_off_timeout "$ANDROID_TIMEOUT_NEVER" 2>/dev/null || true
+log "Disabled Android screen timeout (set to max)"
 
 # Record startup time as the last-motion timestamp
 LAST_MOTION=$(date +%s)
