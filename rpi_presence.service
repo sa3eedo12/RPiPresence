@@ -1,0 +1,14 @@
+[Unit]
+Description=RPiPresence – motion-sensor display control
+After=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/rpi_presence/rpi_presence.py /opt/rpi_presence/config.ini
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
