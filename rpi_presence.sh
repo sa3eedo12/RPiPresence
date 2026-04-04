@@ -149,6 +149,10 @@ fi
 
 log "Initial screen state: $([ "$SCREEN_ON" = "1" ] && printf 'ON' || printf 'OFF')"
 
+# Emit a heartbeat log every HEARTBEAT_INTERVAL seconds even when nothing changes
+HEARTBEAT_INTERVAL=300
+LAST_HEARTBEAT=$(date +%s)
+
 while true; do
     # Read sensor value (0 or 1)
     if ! VAL=$(cat "${GPIO_PATH}/value" 2>/dev/null); then
@@ -171,6 +175,13 @@ while true; do
             screen_off
             SCREEN_ON=0
         fi
+    fi
+
+    # Periodic heartbeat so the log confirms the script is alive
+    if [ "$((NOW - LAST_HEARTBEAT))" -ge "$HEARTBEAT_INTERVAL" ]; then
+        IDLE=$((NOW - LAST_MOTION))
+        log "Heartbeat — sensor=${VAL} screen=$([ "$SCREEN_ON" = "1" ] && printf 'ON' || printf 'OFF') idle=${IDLE}s"
+        LAST_HEARTBEAT=$NOW
     fi
 
     sleep "$POLL_INTERVAL"
