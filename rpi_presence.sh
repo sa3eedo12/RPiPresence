@@ -153,6 +153,11 @@ log "Initial screen state: $([ "$SCREEN_ON" = "1" ] && printf 'ON' || printf 'OF
 HEARTBEAT_INTERVAL=300
 LAST_HEARTBEAT=$(date +%s)
 
+# Verify actual screen state every SCREEN_CHECK_INTERVAL seconds to catch
+# display changes made outside this script (e.g. Android screen timeout)
+SCREEN_CHECK_INTERVAL=30
+LAST_SCREEN_CHECK=$(date +%s)
+
 while true; do
     # Read sensor value (0 or 1)
     if ! VAL=$(cat "${GPIO_PATH}/value" 2>/dev/null); then
@@ -177,11 +182,28 @@ while true; do
         fi
     fi
 
+    # Periodically verify actual screen state to catch out-of-band changes
+    # (e.g. Android screen timeout or lock screen turning the display off)
+    if [ "$((NOW - LAST_SCREEN_CHECK))" -ge "$SCREEN_CHECK_INTERVAL" ]; then
+        LAST_SCREEN_CHECK=$NOW
+        if screen_is_on; then
+            SCREEN_ON=1
+        else
+            if [ "$SCREEN_ON" = "1" ]; then
+                log "Screen was off unexpectedly — turning display ON"
+                screen_on
+                SCREEN_ON=1
+            fi
+        fi
+    fi
+
     # Periodic heartbeat so the log confirms the script is alive
     if [ "$((NOW - LAST_HEARTBEAT))" -ge "$HEARTBEAT_INTERVAL" ]; then
         IDLE=$((NOW - LAST_MOTION))
-        log "Heartbeat — sensor=${VAL} screen=$([ "$SCREEN_ON" = "1" ] && printf 'ON' || printf 'OFF') idle=${IDLE}s"
+        if screen_is_on; then _hb_screen=ON; else _hb_screen=OFF; fi
+        log "Heartbeat — sensor=${VAL} screen=${_hb_screen} idle=${IDLE}s"
         LAST_HEARTBEAT=$NOW
+        LAST_SCREEN_CHECK=$NOW
     fi
 
     sleep "$POLL_INTERVAL"
