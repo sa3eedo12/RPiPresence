@@ -70,6 +70,7 @@ backlight_path = /sys/class/backlight/rpi_backlight
 [timing]
 timeout = 60           # seconds of no motion before display turns off
 poll_interval = 0.5    # seconds between sensor reads
+cooldown = 10          # seconds to ignore sensor after display turns off
 
 [logging]
 level = INFO           # DEBUG, INFO, WARNING, ERROR

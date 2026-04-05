@@ -281,12 +281,14 @@ def run(config_path: str = "config.ini") -> None:  # noqa: C901
     # -- Timing --
     timeout = config.getfloat("timing", "timeout", fallback=60)
     poll_interval = config.getfloat("timing", "poll_interval", fallback=0.5)
+    cooldown = config.getfloat("timing", "cooldown", fallback=10)
 
     logger.info(
-        "Starting RPiPresence (pin=%d, timeout=%.1fs, poll=%.1fs)",
+        "Starting RPiPresence (pin=%d, timeout=%.1fs, poll=%.1fs, cooldown=%.1fs)",
         gpio_pin,
         timeout,
         poll_interval,
+        cooldown,
     )
 
     # Graceful shutdown
@@ -303,6 +305,7 @@ def run(config_path: str = "config.ini") -> None:  # noqa: C901
     display_on = True
     display.turn_on()
     last_motion_time = time.monotonic()
+    last_off_time: float = 0.0
 
     try:
         while running:
@@ -311,13 +314,21 @@ def run(config_path: str = "config.ini") -> None:  # noqa: C901
             if motion:
                 last_motion_time = time.monotonic()
                 if not display_on:
-                    logger.info("Motion detected – turning display ON")
-                    display.turn_on()
-                    display_on = True
+                    elapsed = time.monotonic() - last_off_time
+                    if elapsed < cooldown:
+                        logger.debug(
+                            "Cooldown active — ignoring motion (%.0fs remaining)",
+                            cooldown - elapsed,
+                        )
+                    else:
+                        logger.info("Motion detected – turning display ON")
+                        display.turn_on()
+                        display_on = True
             elif display_on and (time.monotonic() - last_motion_time) >= timeout:
                 logger.info("No motion for %.0fs – turning display OFF", timeout)
                 display.turn_off()
                 display_on = False
+                last_off_time = time.monotonic()
 
             time.sleep(poll_interval)
     finally:
