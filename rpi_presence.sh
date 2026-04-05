@@ -24,6 +24,8 @@ CONFIG_FILE="${1:-config.ini}"
 GPIO_PIN=17
 TIMEOUT=60
 POLL_INTERVAL=1
+COOLDOWN=10
+LOG_LEVEL=INFO
 
 # Maximum 32-bit signed integer — used to effectively disable Android's screen timeout
 ANDROID_TIMEOUT_NEVER=2147483647
@@ -67,6 +69,20 @@ if [ -f "$CONFIG_FILE" ]; then
                     POLL_INTERVAL="$_val"
                 fi
                 ;;
+            cooldown*=*)
+                if [ "$_in_timing" = "1" ]; then
+                    _val=$(printf '%s' "$_line" | sed 's/^cooldown[[:space:]]*=[[:space:]]*//')
+                    # Drop fractional part — shell arithmetic requires integers
+                    _val=$(printf '%s' "$_val" | sed 's/\..*//')
+                    # Clamp to at least 0
+                    if [ -z "$_val" ]; then
+                        _val=0
+                    elif [ "$_val" -lt 0 ] 2>/dev/null; then
+                        _val=0
+                    fi
+                    COOLDOWN="$_val"
+                fi
+                ;;
         esac
     done < "$CONFIG_FILE"
 fi
@@ -79,6 +95,12 @@ GPIO_PATH="/sys/class/gpio/gpio${GPIO_PIN}"
 
 log() {
     printf '%s [INFO] rpi_presence: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
+}
+
+log_debug() {
+    if [ "$LOG_LEVEL" = "DEBUG" ]; then
+        printf '%s [DEBUG] rpi_presence: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -138,7 +160,7 @@ trap cleanup INT TERM
 # Main
 # ---------------------------------------------------------------------------
 
-log "Starting RPiPresence (pin=${GPIO_PIN}, timeout=${TIMEOUT}s, poll=${POLL_INTERVAL}s)"
+log "Starting RPiPresence (pin=${GPIO_PIN}, timeout=${TIMEOUT}s, poll=${POLL_INTERVAL}s, cooldown=${COOLDOWN}s)"
 log "Config: ${CONFIG_FILE}"
 
 gpio_export
@@ -148,6 +170,8 @@ log "Disabled Android screen timeout (set to max)"
 
 # Record startup time as the last-motion timestamp
 LAST_MOTION=$(date +%s)
+# Track when the display was last turned off (0 = never)
+LAST_OFF_TIME=0
 
 # Assume screen starts on; sync with actual state
 if screen_is_on; then
@@ -176,11 +200,19 @@ while true; do
     NOW=$(date +%s)
 
     if [ "$VAL" = "1" ]; then
-        LAST_MOTION=$NOW
         if [ "$SCREEN_ON" = "0" ]; then
-            log "Motion detected — turning display ON"
-            screen_on
-            SCREEN_ON=1
+            _elapsed=$((NOW - LAST_OFF_TIME))
+            if [ "$COOLDOWN" -gt 0 ] && [ "$_elapsed" -lt "$COOLDOWN" ]; then
+                _remaining=$((COOLDOWN - _elapsed))
+                log_debug "Cooldown active — ignoring motion (${_remaining}s remaining)"
+            else
+                LAST_MOTION=$NOW
+                log "Motion detected — turning display ON"
+                screen_on
+                SCREEN_ON=1
+            fi
+        else
+            LAST_MOTION=$NOW
         fi
     else
         IDLE=$((NOW - LAST_MOTION))
@@ -188,6 +220,7 @@ while true; do
             log "No motion for ${IDLE}s — turning display OFF"
             screen_off
             SCREEN_ON=0
+            LAST_OFF_TIME=$NOW
         fi
     fi
 

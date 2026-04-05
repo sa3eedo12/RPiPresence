@@ -266,13 +266,14 @@ tail -f /data/local/tmp/rpi_presence.log
 #### Configuration
 
 The shell script reads the same `config.ini` file as the Python script.
-Only three values are used; all others are ignored:
+Only four values are used; all others are ignored:
 
 | Key | Section | Default | Notes |
 |---|---|---|---|
 | `gpio_pin` | `[sensor]` | `17` | BCM GPIO pin number |
 | `timeout` | `[timing]` | `60` | Seconds of no motion before display off |
 | `poll_interval` | `[timing]` | `1` | Seconds between sensor reads (fractions are truncated; minimum 1) |
+| `cooldown` | `[timing]` | `10` | Seconds to ignore sensor readings after display turns off (fractions truncated; minimum 0) |
 
 ## License
 
