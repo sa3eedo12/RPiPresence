@@ -92,5 +92,78 @@ class TestLoadConfig(unittest.TestCase):
         self.assertEqual(cfg.sections(), [])
 
 
+class TestCooldown(unittest.TestCase):
+    """Test that the cooldown period suppresses spurious motion re-triggers."""
+
+    def _base_config(self):
+        config = configparser.ConfigParser()
+        config.read_dict({
+            "sensor":  {"gpio_pin": "17", "gpio_method": "sysfs", "gpio_chip": "gpiochip0"},
+            "display": {"method": "backlight", "backlight_path": "/fake"},
+            "timing":  {"timeout": "60", "poll_interval": "0.5", "cooldown": "10"},
+            "logging": {"level": "DEBUG"},
+        })
+        return config
+
+    def test_motion_during_cooldown_does_not_wake_display(self):
+        """Motion immediately after display-off should be ignored during cooldown.
+
+        Sequence of time.monotonic() calls (6 total):
+          #1  startup last_motion_time = 0
+          #2  iter 1 (no motion): timeout check → 0–0=0 < 60, no action
+          #3  iter 2 (no motion): timeout check → 60–0=60 >= 60 → turn_off
+          #4  iter 2 (no motion): last_off_time = 60
+          #5  iter 3 (motion):    last_motion_time = 61
+          #6  iter 3 (motion):    elapsed check → 61–60=1 < 10 → cooldown active
+        """
+        reader = MagicMock()
+        reader.read.side_effect = [False, False, True, StopIteration()]
+        display = MagicMock()
+        config = self._base_config()
+
+        time_values = iter([0, 0, 60, 60, 61, 61])
+
+        with patch("rpi_presence._load_config", return_value=config), \
+             patch("rpi_presence.create_gpio_reader", return_value=reader), \
+             patch("rpi_presence.create_display_controller", return_value=display), \
+             patch("time.monotonic", side_effect=time_values), \
+             patch("time.sleep"):
+            with self.assertRaises(StopIteration):
+                rpi_presence.run("fake.ini")
+
+        # turn_on called only once (at startup); cooldown blocked the re-trigger
+        display.turn_on.assert_called_once()
+        display.turn_off.assert_called_once()
+
+    def test_motion_after_cooldown_wakes_display(self):
+        """Motion after the cooldown period has elapsed should turn the display on.
+
+        Sequence of time.monotonic() calls (5 total):
+          #1  startup last_motion_time = 0
+          #2  iter 1 (no motion): timeout check → 60–0=60 >= 60 → turn_off
+          #3  iter 1 (no motion): last_off_time = 60
+          #4  iter 2 (motion):    last_motion_time = 71
+          #5  iter 2 (motion):    elapsed check → 71–60=11 >= 10 → turn_on
+        """
+        reader = MagicMock()
+        reader.read.side_effect = [False, True, StopIteration()]
+        display = MagicMock()
+        config = self._base_config()
+
+        time_values = iter([0, 60, 60, 71, 71])
+
+        with patch("rpi_presence._load_config", return_value=config), \
+             patch("rpi_presence.create_gpio_reader", return_value=reader), \
+             patch("rpi_presence.create_display_controller", return_value=display), \
+             patch("time.monotonic", side_effect=time_values), \
+             patch("time.sleep"):
+            with self.assertRaises(StopIteration):
+                rpi_presence.run("fake.ini")
+
+        # turn_on called twice: once at startup and once after cooldown
+        self.assertEqual(display.turn_on.call_count, 2)
+        display.turn_off.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()
