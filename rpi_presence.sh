@@ -45,6 +45,10 @@ ANDROID_TIMEOUT_NEVER=2147483647
 # Maximum log file size in bytes before rotation (1 MB)
 MAX_LOG_SIZE=1048576
 
+# Sysfs bl_power values (kernel interface: 0 = on, 1 = off)
+BL_POWER_ON=0
+BL_POWER_OFF=1
+
 # Emit a heartbeat log every HEARTBEAT_INTERVAL seconds
 HEARTBEAT_INTERVAL=300
 
@@ -104,7 +108,7 @@ load_config() {
                         COOLDOWN="$_val"
                         ;;
                     logging/level)
-                        # Normalise to uppercase
+                        # Normalize to uppercase
                         _val=$(printf '%s' "$_val" | tr '[:lower:]' '[:upper:]')
                         case "$_val" in
                             DEBUG|INFO|WARNING|ERROR) LOG_LEVEL="$_val" ;;
@@ -258,7 +262,7 @@ screen_is_on() {
     case "$DISPLAY_BACKEND" in
         backlight)
             # bl_power: 0 = on, 1 = off
-            [ "$(cat "${BACKLIGHT_PATH}/bl_power" 2>/dev/null)" = "0" ]
+            [ "$(cat "${BACKLIGHT_PATH}/bl_power" 2>/dev/null)" = "$BL_POWER_ON" ]
             ;;
         android)
             dumpsys power 2>/dev/null | grep -q 'mWakefulness=Awake'
@@ -269,7 +273,7 @@ screen_is_on() {
 screen_on() {
     case "$DISPLAY_BACKEND" in
         backlight)
-            printf '0' > "${BACKLIGHT_PATH}/bl_power" 2>/dev/null || true
+            printf '%s' "$BL_POWER_ON" > "${BACKLIGHT_PATH}/bl_power" 2>/dev/null || true
             ;;
         android)
             if ! screen_is_on; then
@@ -283,7 +287,7 @@ screen_on() {
 screen_off() {
     case "$DISPLAY_BACKEND" in
         backlight)
-            printf '1' > "${BACKLIGHT_PATH}/bl_power" 2>/dev/null || true
+            printf '%s' "$BL_POWER_OFF" > "${BACKLIGHT_PATH}/bl_power" 2>/dev/null || true
             ;;
         android)
             if screen_is_on; then
