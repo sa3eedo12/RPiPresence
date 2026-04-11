@@ -1,5 +1,5 @@
 [Unit]
-Description=RPiPresence – motion-sensor display control
+Description=RPiPresence – presence-sensor display control
 After=multi-user.target
 
 [Service]
