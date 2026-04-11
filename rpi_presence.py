@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""RPiPresence - Keep the display on while the motion sensor detects presence.
+"""RPiPresence - Keep the display on while a presence sensor detects someone.
 
-Monitors a GPIO-connected motion/presence sensor (e.g. HC-SR501 PIR) on a
-Raspberry Pi running emteriaOS.  The display stays on as long as motion is
-detected and turns off after a configurable idle timeout.
+Monitors a presence sensor on a Raspberry Pi and controls the display.
+Supports the **LD2410 mmWave radar** (via UART) and traditional
+**GPIO-connected sensors** (e.g. PIR).  The display stays on as long as
+presence is detected and turns off after a configurable idle timeout.
 """
 
 import configparser
@@ -19,22 +20,156 @@ from pathlib import Path
 logger = logging.getLogger("rpi_presence")
 
 # ---------------------------------------------------------------------------
-# GPIO readers
+# Sensor readers
 # ---------------------------------------------------------------------------
 
-class GPIOReader(ABC):
-    """Abstract base class for reading a GPIO pin."""
+class SensorReader(ABC):
+    """Abstract base class for reading a presence sensor."""
 
     @abstractmethod
     def read(self) -> bool:
-        """Return *True* when the sensor signals motion / presence."""
+        """Return *True* when the sensor signals presence."""
 
     @abstractmethod
     def cleanup(self) -> None:
         """Release any resources held by the reader."""
 
 
-class GpiodReader(GPIOReader):
+# -- LD2410 mmWave sensor (UART) -------------------------------------------
+
+class LD2410Reader(SensorReader):
+    """Read presence data from an LD2410 mmWave sensor via UART serial.
+
+    The LD2410 family (LD2410 / LD2410B / LD2410C) continuously sends
+    reporting frames at ~10 Hz over a 256 000 baud UART link.  Each frame
+    carries a *target state* byte indicating whether a moving target, a
+    stationary target, both, or no target is detected.
+
+    An optional *max_distance* (in cm) can be set to ignore targets that
+    are further away – useful for limiting detection to a desk area.
+    """
+
+    # Frame markers
+    _HEADER = bytes([0xF4, 0xF3, 0xF2, 0xF1])
+    _FOOTER = bytes([0xF8, 0xF7, 0xF6, 0xF5])
+
+    # Target-data report identifier (first two bytes of data section)
+    _TARGET_DATA_TYPE = bytes([0x02, 0xAA])
+
+    # Target states
+    _NO_TARGET = 0x00
+
+    # Safety limit to prevent unbounded buffer growth
+    _MAX_BUFFER = 512
+
+    def __init__(
+        self,
+        port: str = "/dev/ttyS0",
+        baud_rate: int = 256_000,
+        max_distance: int = 0,
+    ) -> None:
+        import serial  # type: ignore[import-untyped]
+
+        self._serial = serial.Serial(port, baud_rate, timeout=0.1)
+        self._max_distance = max_distance
+        self._buffer = bytearray()
+        logger.info(
+            "LD2410Reader: %s @ %d baud (max_distance=%s cm)",
+            port,
+            baud_rate,
+            max_distance if max_distance > 0 else "unlimited",
+        )
+
+    def read(self) -> bool:
+        """Return *True* if the latest frame reports a presence target."""
+        waiting = self._serial.in_waiting
+        if waiting > 0:
+            self._buffer.extend(self._serial.read(waiting))
+        else:
+            # Nothing buffered – do a short blocking read.
+            chunk = self._serial.read(64)
+            if chunk:
+                self._buffer.extend(chunk)
+
+        # Prevent unbounded buffer growth.
+        if len(self._buffer) > self._MAX_BUFFER:
+            self._buffer = self._buffer[-self._MAX_BUFFER:]
+
+        return self._parse_latest_frame()
+
+    def _parse_latest_frame(self) -> bool:
+        """Parse buffered data and return the presence state of the last
+        complete target-data frame.  Consumed bytes are discarded."""
+        present = False
+        found = False
+
+        while True:
+            header_idx = self._buffer.find(self._HEADER)
+            if header_idx == -1:
+                # Keep a possible partial header at the tail.
+                self._buffer = self._buffer[-3:] if len(self._buffer) >= 3 else self._buffer
+                break
+
+            # Need header(4) + length(2) to know frame size.
+            if header_idx + 6 > len(self._buffer):
+                self._buffer = self._buffer[header_idx:]
+                break
+
+            data_len = int.from_bytes(
+                self._buffer[header_idx + 4 : header_idx + 6], "little",
+            )
+
+            # Full frame: header(4) + length(2) + data(data_len) + footer(4)
+            frame_end = header_idx + 6 + data_len + 4
+            if frame_end > len(self._buffer):
+                self._buffer = self._buffer[header_idx:]
+                break
+
+            # Verify footer.
+            footer_start = header_idx + 6 + data_len
+            if self._buffer[footer_start : footer_start + 4] != self._FOOTER:
+                # Bad frame – skip past this header and try the next one.
+                self._buffer = self._buffer[header_idx + 4 :]
+                continue
+
+            # Parse target reporting data.
+            data_start = header_idx + 6
+            if (
+                data_len >= 9
+                and self._buffer[data_start : data_start + 2]
+                == self._TARGET_DATA_TYPE
+            ):
+                target_state = self._buffer[data_start + 2]
+
+                if target_state != self._NO_TARGET:
+                    if self._max_distance > 0 and data_len >= 11:
+                        detection_dist = int.from_bytes(
+                            self._buffer[data_start + 9 : data_start + 11],
+                            "little",
+                        )
+                        present = detection_dist <= self._max_distance
+                    else:
+                        present = True
+                else:
+                    present = False
+
+                found = True
+
+            # Discard processed bytes.
+            self._buffer = self._buffer[frame_end:]
+
+        if not found:
+            return False
+        return present
+
+    def cleanup(self) -> None:
+        self._serial.close()
+        logger.debug("LD2410Reader: cleaned up")
+
+
+# -- GPIO-based readers (PIR / LD2410 OUT pin) ------------------------------
+
+class GpiodReader(SensorReader):
     """Read a GPIO pin using the *gpiod* (libgpiod ≥ 2) Python bindings."""
 
     def __init__(self, chip: str, pin: int) -> None:
@@ -57,7 +192,7 @@ class GpiodReader(GPIOReader):
         logger.debug("GpiodReader: cleaned up")
 
 
-class SysfsGPIOReader(GPIOReader):
+class SysfsGPIOReader(SensorReader):
     """Read a GPIO pin through the legacy sysfs interface."""
 
     def __init__(self, pin: int) -> None:
@@ -80,7 +215,7 @@ class SysfsGPIOReader(GPIOReader):
         logger.debug("SysfsGPIOReader: cleaned up")
 
 
-class RPiGPIOReader(GPIOReader):
+class RPiGPIOReader(SensorReader):
     """Read a GPIO pin using the *RPi.GPIO* library."""
 
     def __init__(self, pin: int) -> None:
@@ -100,8 +235,8 @@ class RPiGPIOReader(GPIOReader):
         logger.debug("RPiGPIOReader: cleaned up")
 
 
-def create_gpio_reader(method: str, chip: str, pin: int) -> GPIOReader:
-    """Instantiate a *GPIOReader* based on the chosen *method*.
+def create_gpio_reader(method: str, chip: str, pin: int) -> SensorReader:
+    """Instantiate a GPIO-based *SensorReader* based on the chosen *method*.
 
     When *method* is ``"auto"``, each backend is tried in order:
     gpiod → sysfs → RPi.GPIO.
@@ -129,6 +264,30 @@ def create_gpio_reader(method: str, chip: str, pin: int) -> GPIOReader:
     raise RuntimeError(
         f"No working GPIO method found (tried {order})"
     ) from last_err
+
+
+def create_sensor_reader(config: configparser.ConfigParser) -> SensorReader:
+    """Instantiate a *SensorReader* based on the ``[sensor]`` configuration.
+
+    When ``type`` is ``ld2410`` the LD2410 UART reader is used.
+    When ``type`` is ``gpio`` the GPIO reader factory is used (for PIR sensors
+    or the LD2410's digital OUT pin).
+    """
+    sensor_type = config.get("sensor", "type", fallback="ld2410")
+
+    if sensor_type == "ld2410":
+        port = config.get("sensor", "serial_port", fallback="/dev/ttyS0")
+        baud = config.getint("sensor", "baud_rate", fallback=256_000)
+        max_dist = config.getint("sensor", "max_distance", fallback=0)
+        return LD2410Reader(port=port, baud_rate=baud, max_distance=max_dist)
+
+    if sensor_type == "gpio":
+        gpio_pin = config.getint("sensor", "gpio_pin", fallback=17)
+        gpio_method = config.get("sensor", "gpio_method", fallback="auto")
+        gpio_chip = config.get("sensor", "gpio_chip", fallback="gpiochip0")
+        return create_gpio_reader(gpio_method, gpio_chip, gpio_pin)
+
+    raise ValueError(f"Unknown sensor type: {sensor_type!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -265,10 +424,8 @@ def run(config_path: str = "config.ini") -> None:  # noqa: C901
     )
 
     # -- Sensor --
-    gpio_pin = config.getint("sensor", "gpio_pin", fallback=17)
-    gpio_method = config.get("sensor", "gpio_method", fallback="auto")
-    gpio_chip = config.get("sensor", "gpio_chip", fallback="gpiochip0")
-    reader = create_gpio_reader(gpio_method, gpio_chip, gpio_pin)
+    sensor_type = config.get("sensor", "type", fallback="ld2410")
+    reader = create_sensor_reader(config)
 
     # -- Display --
     display_method = config.get("display", "method", fallback="auto")
@@ -284,8 +441,8 @@ def run(config_path: str = "config.ini") -> None:  # noqa: C901
     cooldown = config.getfloat("timing", "cooldown", fallback=10)
 
     logger.info(
-        "Starting RPiPresence (pin=%d, timeout=%.1fs, poll=%.1fs, cooldown=%.1fs)",
-        gpio_pin,
+        "Starting RPiPresence (sensor=%s, timeout=%.1fs, poll=%.1fs, cooldown=%.1fs)",
+        sensor_type,
         timeout,
         poll_interval,
         cooldown,

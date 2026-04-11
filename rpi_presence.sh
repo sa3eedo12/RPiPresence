@@ -1,18 +1,23 @@
 #!/system/bin/sh
 # rpi_presence.sh — Zero-dependency presence script for emteriaOS (Android).
 #
-# Polls a PIR motion sensor via sysfs GPIO and controls the display using
-# Android's `input keyevent` command.  Requires no Python, Termux, or any
-# package installation — only root access and the commands available in a
-# standard emteriaOS shell.
+# Polls an LD2410C mmWave presence sensor (or PIR) via sysfs GPIO and
+# controls the display using Android's `input keyevent` command.
+# Requires no Python, Termux, or any package installation — only root
+# access and the commands available in a standard emteriaOS shell.
+#
+# The LD2410C has a digital OUT pin that goes HIGH when presence is detected
+# and LOW when no target is in range — this works exactly like a PIR sensor
+# from the GPIO perspective, but detects stationary people as well.
 #
 # Usage:
 #   sh rpi_presence.sh [config.ini]
 #
 # Defaults (used when config.ini is absent or a value is not set):
 #   gpio_pin      = 17
-#   timeout       = 60   (seconds)
+#   timeout       = 15   (seconds)
 #   poll_interval = 1    (seconds; Android sleep does not support fractions)
+#   cooldown      = 0    (mmWave sensors don't need cooldown)
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -22,9 +27,9 @@ CONFIG_FILE="${1:-config.ini}"
 
 # Defaults
 GPIO_PIN=17
-TIMEOUT=60
+TIMEOUT=15
 POLL_INTERVAL=1
-COOLDOWN=10
+COOLDOWN=0
 LOG_LEVEL=INFO
 
 # Maximum 32-bit signed integer — used to effectively disable Android's screen timeout

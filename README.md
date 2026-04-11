@@ -1,33 +1,72 @@
 # RPiPresence
 
-Keep a Raspberry Pi display alive while a motion / presence sensor detects
-activity. Designed for a Raspberry Pi running **emteriaOS** with a
-touchscreen, but also works on Raspberry Pi OS with DSI displays.
+Keep a Raspberry Pi display alive while a presence sensor detects someone
+nearby.  Designed for a Raspberry Pi running **emteriaOS** with a
+touchscreen on your desk — the screen turns on when you sit down and off
+when you walk away.
+
+## Supported sensors
+
+| Sensor | Interface | Detects stationary people? |
+|---|---|---|
+| **LD2410C mmWave radar** (default) | UART serial *or* GPIO (OUT pin) | ✅ Yes |
+| HC-SR501 PIR (or similar) | GPIO | ❌ Motion only |
+
+The LD2410C is recommended for desk presence because it uses 24 GHz mmWave
+radar to detect both **moving and stationary** targets — it knows you're
+still at the desk even if you're just reading.
 
 ## How it works
 
-A PIR motion sensor (e.g. HC-SR501) is connected to a GPIO pin.
-`rpi_presence.py` polls the pin and:
+`rpi_presence.py` reads the presence sensor and:
 
-* **Turns the display ON** the moment motion is detected.
-* **Turns the display OFF** after a configurable idle timeout with no motion.
+* **Turns the display ON** the moment presence is detected.
+* **Turns the display OFF** after a configurable idle timeout with no presence.
 
 ### Supported backends
 
-| Backend | GPIO reading | Display control |
+| Backend | Sensor reading | Display control |
 |---|---|---|
-| **gpiod** (default) | libgpiod ≥ 2 Python bindings | — |
+| **ld2410** (default) | UART serial (pyserial) | — |
+| **gpiod** | libgpiod ≥ 2 Python bindings | — |
 | **sysfs** | Legacy `/sys/class/gpio` | — |
 | **RPi.GPIO** | `RPi.GPIO` library | — |
 | **backlight** | — | `/sys/class/backlight/rpi_backlight` (official RPi DSI touchscreen) |
 | **android** | — | `input keyevent` (emteriaOS / Android) |
 
-Both the GPIO reader and the display controller can be set to **auto**
-(the default), which tries each backend in order until one works.
+The sensor type and display controller can each be set to **auto**
+(the default for display), which tries each backend in order until one works.
 
-## Wiring
+## Wiring (LD2410C)
 
-Connect the PIR sensor to the Raspberry Pi:
+### UART mode (recommended — full-featured)
+
+| LD2410C Pin | RPi Pin |
+|---|---|
+| VCC | 5 V (pin 2) |
+| GND | Ground (pin 6) |
+| TX | GPIO 15 / RXD (pin 10) |
+| RX | GPIO 14 / TXD (pin 8) |
+
+> **Note:** The LD2410C TX connects to the RPi RX and vice-versa.
+> On Raspberry Pi OS you may need to enable the serial port:
+> `sudo raspi-config` → Interface Options → Serial Port → disable login shell,
+> enable serial hardware.  The default serial device is `/dev/ttyS0` (mini UART)
+> or `/dev/ttyAMA0` (PL011).
+
+### GPIO mode (simple — for the shell script on emteriaOS)
+
+| LD2410C Pin | RPi Pin |
+|---|---|
+| VCC | 5 V (pin 2) |
+| GND | Ground (pin 6) |
+| OUT | GPIO 17 (pin 11) – configurable |
+
+The OUT pin goes **HIGH** when presence is detected and **LOW** when the
+area is clear.  No UART wiring needed — this works with the shell script
+on emteriaOS without any dependencies.
+
+### Wiring (PIR sensor — legacy)
 
 | PIR Pin | RPi Pin |
 |---|---|
@@ -59,21 +98,29 @@ All settings live in `config.ini`:
 
 ```ini
 [sensor]
-gpio_pin = 17          # BCM GPIO pin for the motion sensor
-gpio_method = auto     # auto | gpiod | sysfs | rpigpio
-gpio_chip = gpiochip0  # gpiod chip device
+type = ld2410             # ld2410 (UART) | gpio (PIR / LD2410 OUT pin)
+
+# LD2410 UART settings
+serial_port = /dev/ttyS0  # serial device
+baud_rate = 256000         # LD2410 default baud rate
+max_distance = 0           # cm; 0 = full range (e.g. 100 for desk only)
+
+# GPIO settings (used when type = gpio)
+gpio_pin = 17              # BCM GPIO pin
+gpio_method = auto         # auto | gpiod | sysfs | rpigpio
+gpio_chip = gpiochip0      # gpiod chip device
 
 [display]
-method = auto          # auto | backlight | android
+method = auto              # auto | backlight | android
 backlight_path = /sys/class/backlight/rpi_backlight
 
 [timing]
-timeout = 60           # seconds of no motion before display turns off
-poll_interval = 0.5    # seconds between sensor reads
-cooldown = 10          # seconds to ignore sensor after display turns off
+timeout = 15               # seconds without presence before display off
+poll_interval = 0.5        # seconds between sensor reads
+cooldown = 0               # seconds to ignore sensor after display off (0 for mmWave)
 
 [logging]
-level = INFO           # DEBUG, INFO, WARNING, ERROR
+level = INFO               # DEBUG, INFO, WARNING, ERROR
 ```
 
 ## Usage
@@ -104,7 +151,8 @@ journalctl -u rpi_presence -f
 ### emteriaOS (Shell Script)
 
 `rpi_presence.sh` is a zero-dependency alternative that runs natively on
-emteriaOS's Android shell.  It requires **no Python, no Termux, and no
+emteriaOS's Android shell.  It reads the **LD2410C OUT pin** (or a PIR
+sensor) via sysfs GPIO.  It requires **no Python, no Termux, and no
 package installation** — only root access and the `input`/`dumpsys` commands
 that are already present on emteriaOS.
 
@@ -263,17 +311,17 @@ tail -f /data/local/tmp/rpi_presence.log
 }
 ```
 
-#### Configuration
+#### Shell script configuration
 
 The shell script reads the same `config.ini` file as the Python script.
 Only four values are used; all others are ignored:
 
 | Key | Section | Default | Notes |
 |---|---|---|---|
-| `gpio_pin` | `[sensor]` | `17` | BCM GPIO pin number |
-| `timeout` | `[timing]` | `60` | Seconds of no motion before display off |
+| `gpio_pin` | `[sensor]` | `17` | BCM GPIO pin number (LD2410C OUT or PIR OUT) |
+| `timeout` | `[timing]` | `15` | Seconds of no presence before display off |
 | `poll_interval` | `[timing]` | `1` | Seconds between sensor reads (fractions are truncated; minimum 1) |
-| `cooldown` | `[timing]` | `10` | Seconds to ignore sensor readings after display turns off (fractions truncated; minimum 0) |
+| `cooldown` | `[timing]` | `0` | Seconds to ignore sensor readings after display turns off (fractions truncated; minimum 0) |
 
 ## License
 
