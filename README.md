@@ -148,13 +148,27 @@ Check logs:
 journalctl -u rpi_presence -f
 ```
 
-### emteriaOS (Shell Script)
+### emteriaOS (Shell Script — recommended for emteria)
 
-`rpi_presence.sh` is a zero-dependency alternative that runs natively on
+`rpi_presence.sh` is a zero-dependency script that runs natively on
 emteriaOS's Android shell.  It reads the **LD2410C OUT pin** (or a PIR
-sensor) via sysfs GPIO.  It requires **no Python, no Termux, and no
-package installation** — only root access and the `input`/`dumpsys` commands
-that are already present on emteriaOS.
+sensor) via sysfs GPIO and controls the display via Android `input keyevent`
+or the sysfs backlight interface.  It requires **no Python, no Termux, and
+no package installation** — only root access.
+
+#### Features
+
+| Feature | Description |
+|---|---|
+| **Full config.ini parsing** | Reads all sections: `[sensor]`, `[display]`, `[timing]`, `[logging]` |
+| **Display backends** | Auto-detects sysfs backlight (DSI) or Android keyevent — configurable |
+| **Startup self-check** | Validates root, GPIO, and display tools before entering the loop |
+| **GPIO auto-recovery** | Re-exports the GPIO pin after 3 consecutive read failures |
+| **PID file** | Writes `/data/local/tmp/rpi_presence.pid` — prevents duplicate instances |
+| **Log rotation** | Automatically trims the log file when it exceeds 1 MB |
+| **Config reload** | Send `SIGHUP` to reload `config.ini` without restarting |
+| **Heartbeat** | Logs a status line every 5 minutes to confirm the script is alive |
+| **Screen state sync** | Periodically checks actual screen state to catch out-of-band changes |
 
 #### Prerequisites
 
@@ -221,7 +235,14 @@ echo "PID: $!"
 Stop it later with:
 
 ```sh
-kill <PID>
+# Using the PID file (written automatically by the script)
+kill $(cat /data/local/tmp/rpi_presence.pid)
+```
+
+Reload config without restarting:
+
+```sh
+kill -HUP $(cat /data/local/tmp/rpi_presence.pid)
 ```
 
 #### Deploy and run via emteria MDM (Device Hub)
@@ -307,21 +328,62 @@ tail -f /data/local/tmp/rpi_presence.log
 {
   "command": "startExecutable",
   "executable": "/system/bin/sh",
-  "parameters": ["-c", "kill $(ps | grep rpi_presence.sh | grep -v grep | awk '{print $1}')"]
+  "parameters": ["-c", "kill $(cat /data/local/tmp/rpi_presence.pid)"]
+}
+```
+
+**Step 5 — Reload config remotely** (without restart)
+
+```json
+{
+  "command": "startExecutable",
+  "executable": "/system/bin/sh",
+  "parameters": ["-c", "kill -HUP $(cat /data/local/tmp/rpi_presence.pid)"]
 }
 ```
 
 #### Shell script configuration
 
-The shell script reads the same `config.ini` file as the Python script.
-Only four values are used; all others are ignored:
+The shell script reads the **same `config.ini`** as the Python script —
+all sections are parsed:
 
 | Key | Section | Default | Notes |
 |---|---|---|---|
 | `gpio_pin` | `[sensor]` | `17` | BCM GPIO pin number (LD2410C OUT or PIR OUT) |
+| `method` | `[display]` | `auto` | `auto`, `backlight`, or `android` |
+| `backlight_path` | `[display]` | `/sys/class/backlight/rpi_backlight` | Sysfs path for DSI backlight |
 | `timeout` | `[timing]` | `15` | Seconds of no presence before display off |
-| `poll_interval` | `[timing]` | `1` | Seconds between sensor reads (fractions are truncated; minimum 1) |
-| `cooldown` | `[timing]` | `0` | Seconds to ignore sensor readings after display turns off (fractions truncated; minimum 0) |
+| `poll_interval` | `[timing]` | `1` | Seconds between sensor reads (minimum 1) |
+| `cooldown` | `[timing]` | `0` | Seconds to ignore sensor after display turns off |
+| `level` | `[logging]` | `INFO` | `DEBUG`, `INFO`, `WARNING`, or `ERROR` |
+
+> **Note:** The shell script uses the LD2410C's **OUT pin** (GPIO) for
+> presence detection.  The LD2410 UART settings (`serial_port`, `baud_rate`,
+> `max_distance`) are only used by the Python script.  The OUT pin provides
+> the same presence/no-presence detection — the sensor does all the signal
+> processing internally.  To limit detection range, configure the LD2410C
+> directly using the HLKRadarTool app (available on Google Play).
+
+## Script vs. Android App
+
+For this use case (presence-based screen control on emteriaOS), **a shell
+script is the better choice**.  Here's why:
+
+| | Shell script | Android app |
+|---|---|---|
+| **Dependencies** | None — runs on any emteriaOS shell | Needs Android SDK, build toolchain, APK signing |
+| **GPIO access** | Direct via sysfs (root) | Requires JNI or root workarounds |
+| **Resource usage** | ~1 MB RSS, negligible CPU | Dalvik/ART VM overhead, ~20–50 MB |
+| **Deployment** | `scp` one file, or push via Device Hub | Build APK, sideload or push via MDM |
+| **Customisation** | Edit `config.ini` in any text editor | Recompile and reinstall the APK |
+| **Reliability** | Survives low-memory kills (tiny footprint) | Android may kill background services |
+| **Debugging** | `tail -f` the log over SSH | Logcat, Android Studio |
+| **Boot persistence** | `nohup` or init.d | BroadcastReceiver + foreground service |
+
+An Android app would make sense if you needed a **settings UI on the
+touchscreen**, integration with Android sensors/APIs, or Play Store
+distribution.  For a headless "read a GPIO pin, toggle the screen" daemon,
+the shell script is simpler, lighter, and more reliable.
 
 ## License
 
